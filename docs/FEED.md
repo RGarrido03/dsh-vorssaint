@@ -16,9 +16,8 @@ version of the plugin.
 
 * The directory is created on demand, mode `0700`; files are mode `0600`.
   Existing paths are tightened to the same modes on first use.
-* `<session-id>` is the DSH session id (`session-<uuid>` or `<uuid>` for
-  subagent sessions) with every character outside `[A-Za-z0-9._-]` replaced by
-  `_`.
+* `<session-id>` is the DSH session id, with every character outside
+  `[A-Za-z0-9._-]` replaced by `_`.
 * Files are UTF-8, one JSON object per line, `\n` terminated. A torn final
   line (no trailing newline) is ignored by the reader and removed by the
   writer the next time it opens the file.
@@ -53,8 +52,8 @@ rewriting it, so the header normally appears once.
 ### `turn`
 
 ```json
-{"v":1,"type":"turn","ts":1793850830395,"turn":1,"phase":"start"}
-{"v":1,"type":"turn","ts":1793850866520,"turn":1,"phase":"end","completed":true}
+{"v":1,"type":"turn","ts":1793850830395,"turn":1,"phase":"start","seq":5}
+{"v":1,"type":"turn","ts":1793850866520,"turn":1,"phase":"end","completed":true,"seq":12}
 ```
 
 | field | type | meaning |
@@ -83,7 +82,7 @@ record.
 | `ts` | number | DSH event time |
 | `turn`, `step` | integer | position in the session (informational) |
 | `seq` | integer, optional | DSH event sequence; used by the writer, ignored by the reader |
-| `request` | string, optional | assistant message id; with `session` it forms the reader's dedupe key |
+| `request` | string, optional | assistant message id; it forms the reader's dedupe key (`dsh:` + id) |
 | `model` | string | model id exactly as the provider route reported it |
 | `provider` | string, optional | DSH provider route (informational) |
 | `tokens.input` | integer | prompt tokens that missed the cache |
@@ -101,6 +100,7 @@ record.
 * `turn` `start` (root session) → `.turnBegan(ts)`.
 * `turn` `end` (root session) → `.turnEnded(ts, completed: completed, duration: nil)`.
 * `usage` → `.usage(key: "dsh:" + (request or "<session>:<turn>:<step>:<ts>"),
+  with the leading `dsh:` also on the fallback key,
   record: AgentUsageRecord(provider: .dsh, date: ts, model: model,
   project: state.project, session: state.session, tokens: tokens,
   cost: cost, savings: 0, reportedCost: cost != nil), billable: AgentBillable(tokens: tokens))`.
@@ -119,7 +119,7 @@ record.
 {"v":1,"type":"session","session":"s-dsh","ts":1790088000000,"cwd":"/Users/me/code/app","preset":"standard"}
 {"v":1,"type":"turn","ts":1790088000000,"turn":1,"phase":"start","seq":0}
 {"v":1,"type":"usage","ts":1790088010000,"turn":1,"step":1,"request":"m1","model":"deepseek/deepseek-v4.1-flash","provider":"commandcode","tokens":{"input":100,"cacheWrite":20,"cacheRead":300,"output":40,"reasoning":10},"cost":0.001}
-{"v":1,"type":"turn","ts":1790088020000,"turn":1,"phase":"end","completed":true}
+{"v":1,"type":"turn","ts":1790088020000,"turn":1,"phase":"end","completed":true,"seq":3}
 ```
 
 ```json
@@ -136,7 +136,8 @@ The subagent file's usage is counted; its turn lines produce no live runs.
   sessions directory for the last `backfillDays` days (default 30) and writes
   the usage/turn lines already present. For a seeded (forked) session it skips
   every event up to and including the `session/end-seed` marker whose
-  `inherited` is `true`, so forked history is not billed twice.
+  `inherited` is `true`; pre-v1 logs, which have no such marker, fall back to
+  the header's `seedLength`. Forked history is therefore not billed twice.
 * **Live.** Lines are appended as the session commits them. Writes are queued
   per file, so order inside a file is preserved.
 * **Restarts.** Existing files are appended to, not rewritten; a missing file

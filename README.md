@@ -94,8 +94,8 @@ above are a shape example, not a quote.
    dedupes by the response id.
 5. On start, before buffered live events are written, the plugin imports the
    usage already in DSH's session logs from the last `backfillDays` days. A
-   session whose feed is newer than its log is skipped, so a normal restart
-   costs nothing. A fork's inherited prefix is not billed again.
+   session whose feed is at least as new as its log is skipped, so a normal
+   restart costs nothing. A fork's inherited prefix is not billed again.
 
 The exact line schema, tolerances and golden lines are in
 [`docs/FEED.md`](docs/FEED.md).
