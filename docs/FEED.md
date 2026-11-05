@@ -65,8 +65,10 @@ rewriting it, so the header normally appears once.
 | `seq` | integer, optional | the DSH event sequence, present on every turn line the writer emits |
 
 Turn lines in a subagent session (`subagent: true`) are ignored by the reader:
-the subagent's work is part of the run it serves. Its usage is still counted.
-A session that merely has a `parent` (an ordinary fork) keeps its turn lines.
+the subagent's work is part of the run it serves. Its usage is still counted,
+but as its own session — it is not folded into the parent's live run, so a
+subagent working while the parent waits does not grow the parent's run. A
+session that merely has a `parent` (an ordinary fork) keeps its turn lines.
 
 ### `usage`
 
