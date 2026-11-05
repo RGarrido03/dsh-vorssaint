@@ -99,8 +99,8 @@ record.
   from `parent`).
 * `turn` `start` (root session) → `.turnBegan(ts)`.
 * `turn` `end` (root session) → `.turnEnded(ts, completed: completed, duration: nil)`.
-* `usage` → `.usage(key: "dsh:" + (request or "<session>:<turn>:<step>:<ts>"),
-  with the leading `dsh:` also on the fallback key,
+* `usage` → `.usage(key: "dsh:" + (request, or "<session>:<turn>:<step>:<unix-seconds>"
+  when the line has no request id),
   record: AgentUsageRecord(provider: .dsh, date: ts, model: model,
   project: state.project, session: state.session, tokens: tokens,
   cost: cost, savings: 0, reportedCost: cost != nil), billable: AgentBillable(tokens: tokens))`.
