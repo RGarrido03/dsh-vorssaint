@@ -7,7 +7,7 @@
  * @module dsh-vorssaint/feed
  */
 
-import { appendFile, mkdir, open, stat, writeFile } from 'node:fs/promises'
+import { appendFile, chmod, mkdir, open, stat, truncate, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ModelRate, Pricing, TokenCounts } from './pricing.js'
@@ -24,8 +24,13 @@ export interface SessionIdentity {
   ts: number
   /** Working directory; the reader takes the project name from it. */
   cwd?: string
-  /** Parent session id for a subagent session. */
-  parent?: string | null
+  /**
+   * The session this one was created from. DSH records it for ordinary forks
+   * too, so it is informational and must not classify a subagent.
+   */
+  parent?: string
+  /** DSH marks a subagent session with `origin: 'subagent'`. */
+  subagent?: boolean
   /** DSH agent preset at creation. */
   preset?: string
 }
@@ -66,6 +71,7 @@ export function identityOf(session: Session): SessionIdentity {
     ts: header.createdAt,
     ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
     ...(header.parentSession === undefined ? {} : { parent: header.parentSession }),
+    ...(header.origin === 'subagent' ? { subagent: true } : {}),
     ...(header.agentPreset === undefined ? {} : { preset: header.agentPreset }),
   }
 }
@@ -83,9 +89,8 @@ export function sessionLine(identity: SessionIdentity): string {
     ts: identity.ts,
   }
   if (identity.cwd !== undefined && identity.cwd !== '') line.cwd = identity.cwd
-  if (identity.parent !== undefined && identity.parent !== null && identity.parent !== '') {
-    line.parent = identity.parent
-  }
+  if (typeof identity.parent === 'string' && identity.parent !== '') line.parent = identity.parent
+  if (identity.subagent === true) line.subagent = true
   if (identity.preset !== undefined && identity.preset !== '') line.preset = identity.preset
   return JSON.stringify(line)
 }
@@ -160,8 +165,11 @@ export function feedEntriesForEvent(event: FeedEventLike, pricing: Pricing): Fee
  *
  * Appends are serialized so lines keep DSH's event order, and the writer skips
  * sequences already on disk, which keeps a restart or a re-read from writing
- * the same response twice. Vorssaint also dedupes by the `request` id, so a
- * torn last line is at worst replayed, never double counted.
+ * the same response twice. Vorssaint also dedupes usage by the response id, so
+ * a torn last line is at worst replayed, never double counted.
+ *
+ * Failures are swallowed after one warning: a read-only home directory or a
+ * full disk must never fail, block or delay an agent turn.
  */
 export class FeedWriter {
   private readonly files = new Map<string, FileState>()
@@ -179,28 +187,38 @@ export class FeedWriter {
    * Append the entries not already written for their session.
    * @param identity - the session the entries belong to.
    * @param entries - ordered entries; filtered by their sequence.
-   * @returns a promise settling after the append.
+   * @returns a promise that never rejects.
    */
   ingest(identity: SessionIdentity, entries: readonly FeedEntry[]): Promise<void> {
     if (entries.length === 0) return Promise.resolve()
-    return this.ensure(identity).then((state) => {
-      const fresh = entries.filter((entry) => entry.seq > state.lastSeq)
-      if (fresh.length === 0) return
-      state.lastSeq = fresh[fresh.length - 1]!.seq
-      const text = fresh.map((entry) => entry.line).join('\n') + '\n'
-      state.chain = state.chain
-        .then(() => appendFile(state.path, text, { mode: 0o600 }))
-        .catch((error: unknown) => {
-          this.warn(`could not append usage to ${state.path}: ${describe(error)}`)
-        })
-      return state.chain
-    })
+    return this.ensure(identity)
+      .then((state) => {
+        const fresh = entries.filter((entry) => entry.seq > state.lastSeq)
+        if (fresh.length === 0) return
+        // Advancing before the append resolves keeps a burst of events from
+        // queueing the same sequence twice; a failed append loses that line
+        // rather than replaying older ones on every later event.
+        state.lastSeq = fresh[fresh.length - 1]!.seq
+        const text = fresh.map((entry) => entry.line).join('\n') + '\n'
+        state.chain = state.chain
+          .then(() => appendFile(state.path, text, { mode: 0o600 }))
+          .catch((error: unknown) => {
+            this.warn(`could not append usage to ${state.path}: ${describe(error)}`)
+          })
+        return state.chain
+      })
+      .catch((error: unknown) => {
+        // The directory promise is cached; clear it so a fixed home directory
+        // is retried by the next event instead of replaying this failure.
+        this.directory = undefined
+        this.warn(`could not open the usage feed at ${this.dir}: ${describe(error)}`)
+      })
   }
 
-  /** Wait for every queued append; called once when the plugin unloads. */
+  /** Wait for every in-flight open and queued append; called on unload. */
   async close(): Promise<void> {
-    const chains = [...this.files.values()].map((state) => state.chain.catch(() => undefined))
-    await Promise.all(chains)
+    await Promise.allSettled([...this.opening.values()])
+    await Promise.allSettled([...this.files.values()].map((state) => state.chain))
   }
 
   private ensure(identity: SessionIdentity): Promise<FileState> {
@@ -222,6 +240,19 @@ export class FeedWriter {
     } catch {
       size = 0
     }
+    // A torn last line from an earlier crash would otherwise merge with the
+    // next record and make both unreadable. Cut it back to the last newline.
+    if (size > 0) {
+      const complete = await completeLength(path, size)
+      if (complete < size) {
+        try {
+          await truncate(path, complete)
+          size = complete
+        } catch {
+          // Left in place: the next append starts a new line anyway.
+        }
+      }
+    }
     const lastSeq = size > 0 ? await lastWrittenSeq(path) : -1
     const state: FileState = { path, lastSeq, chain: Promise.resolve() }
     if (size === 0) {
@@ -229,12 +260,19 @@ export class FeedWriter {
         this.warn(`could not open the usage feed at ${path}: ${describe(error)}`)
       })
     }
+    state.chain = state.chain.then(() => chmod(path, 0o600).catch(() => undefined))
     this.files.set(identity.session, state)
     return state
   }
 
   private ensureDirectory(): Promise<void> {
-    this.directory ??= mkdir(this.dir, { recursive: true, mode: 0o700 }).then(() => undefined)
+    this.directory ??= mkdir(this.dir, { recursive: true, mode: 0o700 })
+      .then(() => chmod(this.dir, 0o700))
+      .catch((error: unknown) => {
+        // The caller clears this cached failure; report it once here.
+        this.warn(`could not create the usage feed directory ${this.dir}: ${describe(error)}`)
+        throw error
+      })
     return this.directory
   }
 
@@ -258,6 +296,25 @@ interface FileState {
 export function feedFileName(session: string): string {
   const safe = session.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '_')
   return `${safe === '' ? 'session' : safe}.jsonl`
+}
+
+/** The length of a file up to and including its last newline. */
+async function completeLength(path: string, size: number): Promise<number> {
+  const handle = await open(path, 'r')
+  try {
+    let start = Math.max(0, size - 64 * 1024)
+    for (;;) {
+      const length = size - start
+      const buffer = Buffer.alloc(length)
+      await handle.read(buffer, 0, length, start)
+      const newline = buffer.lastIndexOf(0x0a)
+      if (newline !== -1) return start + newline + 1
+      if (start === 0) return 0
+      start = Math.max(0, start - 64 * 1024)
+    }
+  } finally {
+    await handle.close()
+  }
 }
 
 /**

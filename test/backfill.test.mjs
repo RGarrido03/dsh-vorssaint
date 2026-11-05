@@ -90,13 +90,37 @@ test('an ordinary end-seed marker is not a fork cut', () => {
   )
 })
 
-test('subagent logs keep their parent and are still readable', () => {
-  const parsed = parseSessionLog(
+test('only origin marks a subagent; a fork keeps its parent without it', () => {
+  const subagent = parseSessionLog(
     log([{ ...header, origin: 'subagent', parentSession: 'session-parent', delegationDepth: 1 }, assistant(1, 'm1')]),
     pricing,
   )
-  assert.equal(parsed.identity.parent, 'session-parent')
-  assert.equal(parsed.entries.length, 1)
+  assert.equal(subagent.identity.parent, 'session-parent')
+  assert.equal(subagent.identity.subagent, true)
+  assert.equal(subagent.entries.length, 1)
+
+  const fork = parseSessionLog(log([{ ...header, isSeeded: true, parentSession: 'session-parent' }, assistant(1, 'm1')]), pricing)
+  assert.equal(fork.identity.parent, 'session-parent')
+  assert.equal(fork.identity.subagent, undefined)
+})
+
+test('a pre-v1 seeded log cuts its inherited prefix by seedLength', () => {
+  const parsed = parseSessionLog(
+    log([
+      { type: 'session', version: 0, id: 'session-v0', createdAt: 1793850692328, cwd: '/Users/me/code/app', parentSession: 'session-parent', seedLength: 3 },
+      { type: 'turn/start', seq: 0, time: 1000, data: { turn: 1 } },
+      assistant(1, 'inherited'),
+      assistant(2, 'inherited-too'),
+      { type: 'turn/start', seq: 3, time: 2000, data: { turn: 2 } },
+      assistant(4, 'live'),
+    ]),
+    pricing,
+  )
+  assert.deepEqual(
+    parsed.entries.map((entry) => JSON.parse(entry.line).type),
+    ['turn', 'usage'],
+  )
+  assert.equal(JSON.parse(parsed.entries[1].line).request, 'live')
 })
 
 test('a log without a session header is refused, damaged rows are skipped', () => {

@@ -126,9 +126,13 @@ export function parseSessionLog(text: string, pricing: Pricing): BackfillItem | 
     ts: header.createdAt,
     ...(header.cwd === undefined ? {} : { cwd: header.cwd }),
     ...(header.parentSession === undefined ? {} : { parent: header.parentSession }),
+    ...(header.origin === 'subagent' ? { subagent: true } : {}),
     ...(header.agentPreset === undefined ? {} : { preset: header.agentPreset }),
   }
-  const inherited = inheritedCut(rows)
+  // Older formats (v0) predate the tagged fork marker and only carry the
+  // inherited prefix length in the header. Without this cut, a fork written
+  // by an old DSH would bill its parent's history again.
+  const inherited = Math.max(inheritedCut(rows), seedCut(header))
   const entries: FeedEntry[] = []
   let lastSeq = inherited
   for (const row of rows) {
@@ -152,9 +156,9 @@ async function feedCoversLog(logPath: string, feedDir: string): Promise<boolean>
       stat(join(feedDir, feedFileName(basename(dirname(logPath))))),
       stat(logPath),
     ])
-    // The two writes race at shutdown; two seconds of slack is enough to
-    // recognise a live-captured log without trusting a stale feed.
-    return feed.mtimeMs + 2000 >= log.mtimeMs
+    // A log flushed after its feed append is re-read rather than skipped;
+    // the writer's sequence filter makes that cheap for the events it holds.
+    return feed.mtimeMs >= log.mtimeMs
   } catch {
     return false
   }
@@ -165,7 +169,9 @@ interface LogHeader {
   createdAt: number
   cwd?: string
   parentSession?: string
+  origin?: string
   agentPreset?: string
+  seedLength?: number
 }
 
 function firstHeader(rows: readonly string[]): LogHeader | undefined {
@@ -185,10 +191,23 @@ function firstHeader(rows: readonly string[]): LogHeader | undefined {
     ...(typeof parsed.parentSession === 'string' && parsed.parentSession !== ''
       ? { parentSession: parsed.parentSession }
       : {}),
+    ...(typeof parsed.origin === 'string' && parsed.origin !== '' ? { origin: parsed.origin } : {}),
     ...(typeof parsed.agentPreset === 'string' && parsed.agentPreset !== ''
       ? { agentPreset: parsed.agentPreset }
       : {}),
+    ...(typeof parsed.seedLength === 'number' && Number.isSafeInteger(parsed.seedLength) && parsed.seedLength > 0
+      ? { seedLength: parsed.seedLength }
+      : {}),
   }
+}
+
+/**
+ * The last inherited sequence of a pre-v1 seeded log, which wrote the prefix
+ * length (`seedLength`) instead of an end-seed marker. The prefix occupies
+ * sequences 0..seedLength-1.
+ */
+function seedCut(header: LogHeader): number {
+  return header.seedLength === undefined ? -1 : header.seedLength - 1
 }
 
 /** The sequence through which a log is a copy of another session's history. */

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FeedWriter, feedEntriesForEvent, feedFileName, sessionLine } from '../lib/feed.js'
@@ -30,8 +30,11 @@ test('the session line carries identity and omits absent metadata', () => {
   assert.deepEqual(line, { v: 1, type: 'session', session: 'session-abc', ts: 1793850692328, cwd: '/Users/me/code/app', preset: 'standard' })
   const minimal = JSON.parse(sessionLine({ session: 's', ts: 1, parent: null }))
   assert.deepEqual(minimal, { v: 1, type: 'session', session: 's', ts: 1 })
-  const subagent = JSON.parse(sessionLine({ session: 's', ts: 1, parent: 'parent' }))
-  assert.equal(subagent.parent, 'parent')
+  const fork = JSON.parse(sessionLine({ session: 's', ts: 1, parent: 'parent' }))
+  assert.equal(fork.parent, 'parent')
+  assert.equal(fork.subagent, undefined)
+  const subagent = JSON.parse(sessionLine({ session: 's', ts: 1, parent: 'parent', subagent: true }))
+  assert.deepEqual([subagent.parent, subagent.subagent], ['parent', true])
 })
 
 test('a turn start and both outcomes map to turn lines', () => {
@@ -84,6 +87,40 @@ test('damaged token counts are clamped instead of trusted', () => {
     {},
   )
   assert.deepEqual(JSON.parse(entry.line).tokens, { input: 0, cacheWrite: 0, cacheRead: 1, output: 0, reasoning: 0 })
+})
+
+test('a torn last line is removed instead of swallowing the next record', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-vorssaint-'))
+  const path = join(dir, 'session-abc.jsonl')
+  await writeFile(path, `${sessionLine(identity)}\n{"v":1,"type":"usage","seq":9`)
+
+  const writer = new FeedWriter(dir, pricing)
+  await writer.ingest(identity, [{ seq: 10, line: '{"v":1,"type":"turn","seq":10}' }])
+  await writer.close()
+
+  const text = await readFile(path, 'utf8')
+  assert.ok(text.endsWith('\n'))
+  const lines = text.trimEnd().split('\n').map((line) => JSON.parse(line))
+  assert.deepEqual(lines.map((line) => line.seq ?? line.type), ['session', 10])
+})
+
+test('close waits for an append that had not been awaited', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-vorssaint-'))
+  const writer = new FeedWriter(dir, pricing)
+  void writer.ingest(identity, [{ seq: 3, line: '{"v":1,"type":"turn","seq":3}' }])
+  await writer.close()
+  const lines = (await readFile(join(dir, feedFileName(identity.session)), 'utf8')).trimEnd().split('\n')
+  assert.equal(lines.length, 2)
+})
+
+test('an unwritable feed directory warns instead of rejecting', async () => {
+  const warnings = []
+  const writer = new FeedWriter('/dev/null/feed', pricing, { warn: (message) => warnings.push(message) })
+  await writer.ingest(identity, [{ seq: 1, line: '{"v":1,"type":"turn","seq":1}' }])
+  await writer.ingest(identity, [{ seq: 2, line: '{"v":1,"type":"turn","seq":2}' }])
+  await writer.close()
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /usage feed/)
 })
 
 test('a session file is appended once per sequence and survives a restart', async () => {

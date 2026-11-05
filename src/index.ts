@@ -120,9 +120,9 @@ export function apply(ctx: Context, config: unknown): void {
   let disposed = false
   const pending: Array<{ identity: SessionIdentity; entries: FeedEntry[] }> = []
 
-  const flush = (): void => {
-    for (const item of pending) void writer.ingest(item.identity, item.entries)
-    pending.length = 0
+  const flush = async (): Promise<void> => {
+    const items = pending.splice(0)
+    await Promise.all(items.map((item) => writer.ingest(item.identity, item.entries)))
   }
 
   ctx.on('session/event', (session: Session, event: SessionEvent) => {
@@ -154,17 +154,17 @@ export function apply(ctx: Context, config: unknown): void {
       } finally {
         if (!disposed) {
           ready = true
-          flush()
+          void flush()
         }
       }
     })()
   }
 
-  ctx.effect(() => () => {
+  ctx.effect(() => async () => {
     disposed = true
     ready = true
-    flush()
-    void writer.close()
+    await flush()
+    await writer.close()
   })
 }
 

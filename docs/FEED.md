@@ -15,12 +15,13 @@ version of the plugin.
 ```
 
 * The directory is created on demand, mode `0700`; files are mode `0600`.
+  Existing paths are tightened to the same modes on first use.
 * `<session-id>` is the DSH session id (`session-<uuid>` or `<uuid>` for
   subagent sessions) with every character outside `[A-Za-z0-9._-]` replaced by
   `_`.
 * Files are UTF-8, one JSON object per line, `\n` terminated. A torn final
-  line (no trailing newline) is ignored by the reader and completed by the
-  writer on the next append.
+  line (no trailing newline) is ignored by the reader and removed by the
+  writer the next time it opens the file.
 * The directory can be overridden in the plugin config (`feedDir`), but
   Vorssaint only reads this default path.
 
@@ -33,11 +34,11 @@ it uses it to skip replayed events and Vorssaint ignores it.
 
 ### `session`
 
-Written first in a file, and repeated when the plugin restarts on a session
-that is still running. Repeating it only refreshes metadata.
+Written first in a file. A restart appends to the existing file instead of
+rewriting it, so the header normally appears once.
 
 ```json
-{"v":1,"type":"session","session":"session-7fe88e4c-4773-4582-ab38-d5b56f942811","ts":1793850692328,"cwd":"/Users/ruben/dsh-plugins","parent":null,"preset":"standard"}
+{"v":1,"type":"session","session":"session-7fe88e4c-4773-4582-ab38-d5b56f942811","ts":1793850692328,"cwd":"/Users/ruben/dsh-plugins","preset":"standard"}
 ```
 
 | field | type | meaning |
@@ -45,7 +46,8 @@ that is still running. Repeating it only refreshes metadata.
 | `session` | string | DSH session id |
 | `ts` | number | `SessionHeader.createdAt` |
 | `cwd` | string, optional | session working directory; the reader derives the project name from its last path component |
-| `parent` | string or null, optional | parent session id when this is a subagent session |
+| `parent` | string, optional | the session this one was created from, informational. DSH also records it for ordinary forks, so it does **not** mean "subagent". |
+| `subagent` | `true`, optional | present only when DSH's `SessionHeader.origin` is `subagent`; the reader then counts usage but shows no live run |
 | `preset` | string, optional | DSH agent preset at creation |
 
 ### `turn`
@@ -61,9 +63,11 @@ that is still running. Repeating it only refreshes metadata.
 | `turn` | integer | DSH turn number |
 | `phase` | `"start"` or `"end"` | |
 | `completed` | boolean, on `end` | `true` when the turn ended normally: reason `completed` or `max-tokens`; `false` for `aborted`, `interrupted`, `blocked`, `error`, `forked` |
+| `seq` | integer, optional | the DSH event sequence, present on every turn line the writer emits |
 
-Turn lines in a subagent session (`parent` non-null) are ignored by the reader:
-the subagent's work is part of its parent's run. Its usage is still counted.
+Turn lines in a subagent session (`subagent: true`) are ignored by the reader:
+the subagent's work is part of the run it serves. Its usage is still counted.
+A session that merely has a `parent` (an ordinary fork) keeps its turn lines.
 
 ### `usage`
 
@@ -92,8 +96,8 @@ record.
 ## Reader semantics (Vorssaint `DSHReader`)
 
 * `session` → adopt `session`, compute `project` with the existing
-  `AgentLogParser.projectName(cwd)`, remember whether `parent` makes this a
-  subagent session.
+  `AgentLogParser.projectName(cwd)`, remember `subagent: true` (never infer it
+  from `parent`).
 * `turn` `start` (root session) → `.turnBegan(ts)`.
 * `turn` `end` (root session) → `.turnEnded(ts, completed: completed, duration: nil)`.
 * `usage` → `.usage(key: "dsh:" + (request or "<session>:<turn>:<step>:<ts>"),
@@ -104,22 +108,23 @@ record.
   clamped to 0. A usage line with an empty `model` is ignored.
 * The reader tolerates a file that starts mid-session: absent metadata leaves
   the session/project empty and only usage is counted.
-* Vorssaint's store dedupes by `key`, so a file re-read after a rewrite, or a
-  line written twice, never double counts.
+* Vorssaint's store dedupes `usage` records by `key`, so the same response
+  written twice never double counts. `turn` lines have no key: a re-read can
+  replay a turn boundary, which the store's idempotence rules absorb.
 * `DSHReader.readsFullHistoryFirst` is `false`.
 
 ## Golden lines
 
 ```json
-{"v":1,"type":"session","session":"s-dsh","ts":1790088000000,"cwd":"/Users/me/code/app","parent":null,"preset":"standard"}
-{"v":1,"type":"turn","ts":1790088000000,"turn":1,"phase":"start"}
+{"v":1,"type":"session","session":"s-dsh","ts":1790088000000,"cwd":"/Users/me/code/app","preset":"standard"}
+{"v":1,"type":"turn","ts":1790088000000,"turn":1,"phase":"start","seq":0}
 {"v":1,"type":"usage","ts":1790088010000,"turn":1,"step":1,"request":"m1","model":"deepseek/deepseek-v4.1-flash","provider":"commandcode","tokens":{"input":100,"cacheWrite":20,"cacheRead":300,"output":40,"reasoning":10},"cost":0.001}
 {"v":1,"type":"turn","ts":1790088020000,"turn":1,"phase":"end","completed":true}
 ```
 
 ```json
-{"v":1,"type":"session","session":"s-sub","ts":1790088000000,"cwd":"/Users/me/code/app","parent":"s-dsh"}
-{"v":1,"type":"turn","ts":1790088000000,"turn":1,"phase":"start"}
+{"v":1,"type":"session","session":"s-sub","ts":1790088000000,"cwd":"/Users/me/code/app","parent":"s-dsh","subagent":true}
+{"v":1,"type":"turn","ts":1790088000000,"turn":1,"phase":"start","seq":0}
 {"v":1,"type":"usage","ts":1790088010000,"turn":1,"step":1,"request":"m2","model":"deepseek/deepseek-v4.1-flash","tokens":{"input":10,"output":5}}
 ```
 
