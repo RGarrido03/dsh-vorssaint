@@ -1,0 +1,79 @@
+{
+  "name": "dsh-vorssaint",
+  "version": "0.1.0",
+  "description": "Report DeepSeek Harness usage, API value and live runs to Vorssaint.",
+  "icon": "./icon.svg",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "docs",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm build",
+    "test": "node --test test/*.test.mjs",
+    "check": "pnpm typecheck && pnpm build && pnpm test",
+    "prepare": "tsc -p tsconfig.json",
+    "prepack": "tsc -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "vorssaint",
+    "usage",
+    "tokens",
+    "budget",
+    "menubar"
+  ],
+  "license": "MIT",
+  "author": "Rúben Garrido",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RGarrido03/dsh-vorssaint.git"
+  },
+  "homepage": "https://github.com/RGarrido03/dsh-vorssaint#readme",
+  "bugs": {
+    "url": "https://github.com/RGarrido03/dsh-vorssaint/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.2-rc.1": "compatible"
+      },
+      "dsh": "^0.2.2-rc.1"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.0",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-session": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "3.19.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

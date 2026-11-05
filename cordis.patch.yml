@@ -1,0 +1,17 @@
+# dsh-vorssaint bundle layer.
+# One plugin row: turns the DSH session event stream into the JSONL usage feed
+# Vorssaint reads at ~/.vorssaint/agents/dsh.
+- insert:
+    - id: vorssaint
+      name: "dsh-vorssaint"
+      config:
+        # Vorssaint only reads the default feed directory; override it only
+        # together with the app side. Prices are USD per million tokens, keyed
+        # by exact DSH model id (`*` is the fallback):
+        #
+        # pricing:
+        #   "deepseek/deepseek-v4.1-flash": { input: 0.28, output: 0.42 }
+        #
+        # Without a price the feed still reports tokens, model and runs; only
+        # the API-value and daily-budget figures stay empty.
+        backfill: true
